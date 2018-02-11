@@ -39,10 +39,29 @@ class PPO(object):
         self.sess = tf.Session()
         self.tfs = tf.placeholder(tf.float32, [None, S_DIM], 'state')
 
+        l1 = tf.layers.dense(self.tfs, 256, tf.nn.relu)
+        l1 = tf.reshape(l1, [1, -1, 256])
+
+        # RNN
+        self.lstm = tf.contrib.rnn.BasicLSTMCell(256, state_is_tuple=True)
+
+        self.initial_lstm_state0 = tf.placeholder(tf.float32, [1, 256])
+        self.initial_lstm_state1 = tf.placeholder(tf.float32, [1, 256])
+        self.initial_lstm_state = tf.contrib.rnn.LSTMStateTuple(self.initial_lstm_state0, self.initial_lstm_state1)
+
+        self.lstm_state_out = tf.contrib.rnn.LSTMStateTuple(np.zeros([1, 256]), np.zeros([1, 256]))
+
+        lstm_outputs, self.lstm_state = tf.nn.dynamic_rnn(self.lstm,
+                                                        l1,
+                                                        initial_state = self.initial_lstm_state,
+                                                        sequence_length = [1],
+                                                        time_major = False)
+
+        self.lstm_outputs = tf.reshape(lstm_outputs, [-1,256])
+
         # critic
-        l1 = tf.layers.dense(self.tfs, 64, tf.nn.relu)
-        l2 = tf.layers.dense(l1, 64, tf.nn.relu)
-        l3 = tf.layers.dense(l2, 64, tf.nn.relu)
+        l2 = tf.layers.dense(self.lstm_outputs, 128, tf.nn.relu)
+        l3 = tf.layers.dense(l2, 128, tf.nn.relu)
         self.v = tf.layers.dense(l3, 1)
         self.tfdc_r = tf.placeholder(tf.float32, [None, 1], 'discounted_r')
         self.advantage = self.tfdc_r - self.v
@@ -68,19 +87,21 @@ class PPO(object):
         self.atrain_op = tf.train.AdamOptimizer(A_LR).minimize(self.aloss)
         self.sess.run(tf.global_variables_initializer())
 
+
     def update(self):
         global GLOBAL_UPDATE_COUNTER
         while not COORD.should_stop():
             if GLOBAL_EP < EP_MAX:
                 UPDATE_EVENT.wait()                     # wait until get batch of data
-                self.sess.run(self.update_oldpi_op)     # copy pi to old pi
+                self.sess.run(self.update_oldpi_op, { self.initial_lstm_state0: self.lstm_state_out[0],
+                                                      self.initial_lstm_state1: self.lstm_state_out[1]})     # copy pi to old pi
                 data = [QUEUE.get() for _ in range(QUEUE.qsize())]      # collect data from all workers
                 data = np.vstack(data)
                 s, a, r = data[:, :S_DIM], data[:, S_DIM: S_DIM + A_DIM], data[:, -1:]
-                adv = self.sess.run(self.advantage, {self.tfs: s, self.tfdc_r: r})
+                adv = self.sess.run(self.advantage, { self.tfs: s, self.tfdc_r: r, self.initial_lstm_state0: self.lstm_state_out[0], self.initial_lstm_state1: self.lstm_state_out[1]})
                 # update actor and critic in a update loop
-                [self.sess.run(self.atrain_op, {self.tfs: s, self.tfa: a, self.tfadv: adv}) for _ in range(UPDATE_STEP)]
-                [self.sess.run(self.ctrain_op, {self.tfs: s, self.tfdc_r: r}) for _ in range(UPDATE_STEP)]
+                [self.sess.run(self.atrain_op, {self.tfs: s, self.tfa: a, self.tfadv: adv, self.initial_lstm_state0: self.lstm_state_out[0], self.initial_lstm_state1: self.lstm_state_out[1]}) for _ in range(UPDATE_STEP)]
+                [self.sess.run(self.ctrain_op, {self.tfs: s, self.tfdc_r: r, self.initial_lstm_state0: self.lstm_state_out[0], self.initial_lstm_state1: self.lstm_state_out[1]}) for _ in range(UPDATE_STEP)]
                 UPDATE_EVENT.clear()        # updating finished
                 GLOBAL_UPDATE_COUNTER = 0   # reset counter
                 ROLLING_EVENT.set()         # set roll-out available
@@ -98,13 +119,13 @@ class PPO(object):
 
     def choose_action(self, s):
         s = s[np.newaxis, :]
-        a = self.sess.run(self.sample_op, {self.tfs: s})[0]
+        a = self.sess.run(self.sample_op, {self.tfs: s, self.initial_lstm_state0: self.lstm_state_out[0], self.initial_lstm_state1: self.lstm_state_out[1]})[0]
         return a
         #return np.clip(a, -2, 2)
 
     def get_v(self, s):
         if s.ndim < 2: s = s[np.newaxis, :]
-        return self.sess.run(self.v, {self.tfs: s})[0, 0]
+        return self.sess.run(self.v, {self.tfs: s, self.initial_lstm_state0: self.lstm_state_out[0], self.initial_lstm_state1: self.lstm_state_out[1]})[0, 0]
 
 
 class Worker(object):
@@ -114,7 +135,7 @@ class Worker(object):
         #self.env = gym.make(GAME).unwrapped
         self.env = JacoEnv(64, 64, 100)
         self.ppo = GLOBAL_PPO
-        if self.wid == 1:
+        if self.wid == 0:
             self.viewer = mujoco_py.MjViewer(self.env.sim)
 
     def work(self):
@@ -128,7 +149,7 @@ class Worker(object):
                     ROLLING_EVENT.wait()                        # wait until PPO is updated
                     buffer_s, buffer_a, buffer_r = [], [], []   # clear history buffer, use new policy to collect data
 
-                if self.wid == 1:
+                if self.wid == 0:
                     self.viewer.render()
 
                 a = self.ppo.choose_action(s)

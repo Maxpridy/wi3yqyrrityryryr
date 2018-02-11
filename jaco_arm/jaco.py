@@ -188,12 +188,8 @@ class JacoEnv():
         #     reward -= d
 
         dist_sum = 0
-        if dist[0] < 0.1 and dist[1] < 0.1 and dist[2] < 0.1:
-            reward += 10
 
-        # if centerd == self.prev_centerd:
-        #     reward += 10
-
+        # easy
         reward -= centerd
         if centerd > 0.30:
             reward -= 100
@@ -204,14 +200,41 @@ class JacoEnv():
             #reward += 30
             #done = True
 
-        reward += (self.sim.data.get_body_xpos("target")[2] - 0.030989) * 100
-        if self.sim.data.get_body_xpos("target")[2] - 0.030989 > 0.05:
-            reward += (self.sim.data.get_body_xpos("target")[2] - 0.030989) * 1000
+        # normal
+        if dist[0] < 0.30 and dist[1] < 0.30 and dist[2] < 0.30:
+            reward += 1
+
+        # hard
+        if dist[0] < 0.20 and dist[1] < 0.20 and dist[2] < 0.20:
+            reward += 5
+
+        # So hard
+        if dist[0] < 0.15 and dist[1] < 0.15 and dist[2] < 0.15:
+            if self.sim.data.get_body_xpos("target")[2] - 0.030989 > 0.05:
+                reward += (self.sim.data.get_body_xpos("target")[2] - 0.030989) * 1000
+
+        # collision
+        #print(self.sim.data.active_contacts_efc_pos)
+        # for collision in self.sim.data.active_contacts_efc_pos:
+        #     if abs(collision) > 0.001:
+        #         # collision!
+        #         reward -= 50
+        #         done = True
+        #         print(collision)
+        # if len(self.sim.data.active_contacts_efc_pos) > 7 and len(self.sim.data.active_contacts_efc_pos) < 17:
+        #     done = True
+
+
+
+        # if centerd == self.prev_centerd:
+        #     reward += 10
+
+        #
+        # reward += (self.sim.data.get_body_xpos("target")[2] - 0.030989) * 100
+        # if self.sim.data.get_body_xpos("target")[2] - 0.030989 > 0.05:
+        #     reward += (self.sim.data.get_body_xpos("target")[2] - 0.030989) * 1000
 
         self.prev_centerd = centerd
-
-
-
 
         # Transform discrete actions to continuous controls
         # for i in range(self.num_actuators):
